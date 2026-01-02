@@ -47,10 +47,11 @@ public class UIConstants {
     public static final int LAUNCHER_PACKS_TAB = 2;
     public static final int LAUNCHER_INSTANCES_TAB = 3;
     public static final int LAUNCHER_SERVERS_TAB = 4;
-    public static final int LAUNCHER_ACCOUNTS_TAB = 5;
-    public static final int LAUNCHER_TOOLS_TAB = 6;
-    public static final int LAUNCHER_SETTINGS_TAB = 7;
-    public static final int LAUNCHER_ABOUT_TAB = 8;
+    public static final int LAUNCHER_REMOTE_SYNC_TAB = 5;
+    public static final int LAUNCHER_ACCOUNTS_TAB = 6;
+    public static final int LAUNCHER_TOOLS_TAB = 7;
+    public static final int LAUNCHER_SETTINGS_TAB = 8;
+    public static final int LAUNCHER_ABOUT_TAB = 9;
 
     public static final String getInitialTabName(int initialTab) {
         switch (initialTab) {
@@ -64,6 +65,8 @@ public class UIConstants {
                 return "Instances";
             case UIConstants.LAUNCHER_SERVERS_TAB:
                 return "Servers";
+            case UIConstants.LAUNCHER_REMOTE_SYNC_TAB:
+                return "Remote";
             case UIConstants.LAUNCHER_ACCOUNTS_TAB:
                 return "Accounts";
             case UIConstants.LAUNCHER_TOOLS_TAB:

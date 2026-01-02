@@ -66,6 +66,7 @@ public final class FileSystem {
     public static final Path TECHNIC_DOWNLOADS = DOWNLOADS.resolve("technic");
     public static final Path INSTANCES = BASE_DIR.resolve("instances");
     public static final Path SERVERS = BASE_DIR.resolve("servers");
+    public static final Path SERVER_PROFILES = BASE_DIR.resolve("server_profiles");
     public static final Path TEMP = BASE_DIR.resolve("temp");
     public static final Path FAILED_DOWNLOADS = BASE_DIR.resolve("faileddownloads");
 
@@ -240,6 +241,7 @@ public final class FileSystem {
         FileUtils.createDirectory(RUNTIMES);
         FileUtils.createDirectory(MINECRAFT_RUNTIMES);
         FileUtils.createDirectory(SERVERS);
+        FileUtils.createDirectory(SERVER_PROFILES);
         FileUtils.createDirectory(TEMP);
 
         FileUtils.createDirectory(CONFIGS);

@@ -130,6 +130,8 @@ public class Server implements ModManagement {
     public ModrinthVersion modrinthVersion;
     public ModrinthModpackManifest modrinthManifest;
 
+    public RemoteSyncConfig remoteSyncConfig;
+
     public transient Path ROOT;
 
     @Override
@@ -1334,5 +1336,49 @@ public class Server implements ModManagement {
             save();
         }
         PerformanceManager.end("Server::scanMissingMods - CheckForDuplicateMods");
+    }
+
+    // ============================================================
+    // Server Profile Methods
+    // ============================================================
+
+    /**
+     * Gets all saved profiles for this server.
+     */
+    public java.util.List<ServerProfile> getProfiles() {
+        return com.atlauncher.managers.ServerProfileManager.getProfilesForServer(this);
+    }
+
+    /**
+     * Creates a new profile (snapshot) of this server's current state.
+     *
+     * @param profileName The name for the profile
+     * @param description Optional description
+     * @param backupMode  What to include in the profile
+     * @return The created profile, or null if creation failed
+     */
+    public ServerProfile saveProfile(String profileName, String description, BackupMode backupMode) {
+        return com.atlauncher.managers.ServerProfileManager.createProfile(this, profileName, description, backupMode);
+    }
+
+    /**
+     * Checks if this server has unsaved changes compared to its active profile.
+     */
+    public boolean hasUnsavedChanges() {
+        return com.atlauncher.managers.ServerProfileManager.hasUnsavedChanges(this);
+    }
+
+    /**
+     * Gets detailed change information compared to the active profile.
+     */
+    public ChangeDetectionResult getChanges() {
+        return com.atlauncher.managers.ServerProfileManager.detectChanges(this);
+    }
+
+    /**
+     * Gets the currently active profile for this server, if any.
+     */
+    public java.util.Optional<ServerProfile> getActiveProfile() {
+        return com.atlauncher.managers.ServerProfileManager.getActiveProfile(this);
     }
 }

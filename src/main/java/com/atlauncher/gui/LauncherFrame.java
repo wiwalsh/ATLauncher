@@ -52,6 +52,7 @@ import com.atlauncher.gui.tabs.SettingsTab;
 import com.atlauncher.gui.tabs.Tab;
 import com.atlauncher.gui.tabs.accounts.AccountsTab;
 import com.atlauncher.gui.tabs.news.NewsTab;
+import com.atlauncher.gui.tabs.remotesync.RemoteSyncTab;
 import com.atlauncher.gui.tabs.tools.ToolsTab;
 import com.atlauncher.managers.AccountManager;
 import com.atlauncher.managers.LogManager;
@@ -196,6 +197,11 @@ public final class LauncherFrame extends JFrame implements RelocalizationListene
         ServersTab serversTab = new ServersTab();
         this.tabs.put(UIConstants.LAUNCHER_SERVERS_TAB, serversTab);
         PerformanceManager.end("serversTab");
+
+        PerformanceManager.start("remoteSyncTab");
+        RemoteSyncTab remoteSyncTab = new RemoteSyncTab();
+        this.tabs.put(UIConstants.LAUNCHER_REMOTE_SYNC_TAB, remoteSyncTab);
+        PerformanceManager.end("remoteSyncTab");
 
         PerformanceManager.start("accountsTab");
         AccountsTab accountsTab = new AccountsTab();

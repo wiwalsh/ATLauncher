@@ -81,6 +81,9 @@ dependencies {
     // Commons
     implementation 'org.apache.commons:commons-compress:1.27.1'
 
+    // SSH/SFTP for remote sync
+    implementation 'com.jcraft:jsch:0.1.55'
+
     // OkHttp
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
     implementation 'com.squareup.okhttp3:okhttp-tls:4.12.0'
@@ -238,6 +241,7 @@ shadowJar {
         exclude(dependency('com.github.hypfvieh:.*:.*'))
         exclude(dependency('org.apache.commons:commons-compress:.*'))
         exclude(dependency('com.twelvemonkeys.imageio:imageio-webp:.*'))
+        exclude(dependency('com.jcraft:jsch:.*'))
     }
 
     // these are included by dbus-java which is only used on Linux
