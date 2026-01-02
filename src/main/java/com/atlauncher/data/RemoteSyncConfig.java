@@ -127,6 +127,29 @@ public class RemoteSyncConfig {
     public boolean autoSyncOnShutdown = false;
 
     /**
+     * Whether to sync the Minecraft version and loader type to the remote server.
+     * This updates the Docker container's VERSION and TYPE environment variables.
+     */
+    public boolean syncVersion = true;
+
+    /**
+     * Whether to clean remote mods/config directories before syncing.
+     * This ensures a fresh install without leftover files from previous versions.
+     */
+    public boolean cleanBeforeSync = true;
+
+    /**
+     * Path to docker-compose.yml on the remote server.
+     * Used to update VERSION and TYPE for the Minecraft container.
+     */
+    public String dockerComposePath = "/srv/docker/docker-compose.yml";
+
+    /**
+     * The service name in docker-compose.yml for the Minecraft server.
+     */
+    public String dockerServiceName = "minecraft";
+
+    /**
      * Creates a new empty config.
      */
     public RemoteSyncConfig() {

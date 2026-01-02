@@ -82,6 +82,10 @@ public class RemoteSyncTab extends HierarchyPanel implements Tab {
     private JCheckBox syncWorld;
     private JCheckBox syncPlugins;
 
+    // Version sync options
+    private JCheckBox syncVersion;
+    private JCheckBox cleanBeforeSync;
+
     // Auto sync triggers
     private JCheckBox autoSyncOnLaunch;
     private JCheckBox autoSyncOnShutdown;
@@ -245,6 +249,10 @@ public class RemoteSyncTab extends HierarchyPanel implements Tab {
         syncConfigs.setSelected(config.syncConfigs);
         syncPlugins.setSelected(config.syncPlugins);
         syncWorld.setSelected(config.syncWorld);
+
+        // Version sync options
+        syncVersion.setSelected(config.syncVersion);
+        cleanBeforeSync.setSelected(config.cleanBeforeSync);
 
         // Auto sync
         autoSyncOnLaunch.setSelected(config.autoSyncOnLaunch);
@@ -466,6 +474,34 @@ public class RemoteSyncTab extends HierarchyPanel implements Tab {
         JLabel worldWarning = new JLabel("<html><font color='orange'>Only sync world data if you know what you're doing!</font></html>");
         panel.add(worldWarning, gbc);
 
+        // Version sync section
+        row++;
+        gbc.gridy = row;
+        gbc.insets = new Insets(20, 5, 5, 5);
+        JLabel versionHeader = new JLabel("Version management:");
+        panel.add(versionHeader, gbc);
+
+        row++;
+        gbc.gridy = row;
+        gbc.insets = new Insets(5, 15, 5, 5);
+        syncVersion = new JCheckBox("Sync Minecraft version to Docker");
+        syncVersion.setSelected(true);
+        syncVersion.setToolTipText("Creates .atlauncher.env with VERSION and TYPE for docker-compose");
+        panel.add(syncVersion, gbc);
+
+        row++;
+        gbc.gridy = row;
+        cleanBeforeSync = new JCheckBox("Clean remote folders before sync");
+        cleanBeforeSync.setSelected(true);
+        cleanBeforeSync.setToolTipText("Removes old mods/configs before uploading new ones");
+        panel.add(cleanBeforeSync, gbc);
+
+        row++;
+        gbc.gridy = row;
+        gbc.insets = new Insets(0, 35, 5, 5);
+        JLabel cleanInfo = new JLabel("<html><i>Recommended to avoid leftover files from previous versions</i></html>");
+        panel.add(cleanInfo, gbc);
+
         // Spacer
         row++;
         gbc.gridy = row;
@@ -568,6 +604,10 @@ public class RemoteSyncTab extends HierarchyPanel implements Tab {
         config.syncConfigs = syncConfigs.isSelected();
         config.syncPlugins = syncPlugins.isSelected();
         config.syncWorld = syncWorld.isSelected();
+
+        // Version sync options
+        config.syncVersion = syncVersion.isSelected();
+        config.cleanBeforeSync = cleanBeforeSync.isSelected();
 
         // Auto sync
         config.autoSyncOnLaunch = autoSyncOnLaunch.isSelected();
