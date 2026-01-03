@@ -139,6 +139,24 @@ public class RemoteSyncConfig {
     public boolean cleanBeforeSync = true;
 
     /**
+     * Whether to restart the Docker container after syncing.
+     * This is required for the container to pick up the new Minecraft version.
+     */
+    public boolean restartAfterSync = true;
+
+    /**
+     * Whether to use fast transfer mode (native scp instead of SFTP).
+     * Much faster for large directories but requires scp on the system.
+     */
+    public boolean useFastTransfer = true;
+
+    /**
+     * Number of parallel transfer threads (1-8).
+     * Higher values upload multiple directories simultaneously.
+     */
+    public int parallelTransferCount = 3;
+
+    /**
      * Path to docker-compose.yml on the remote server.
      * Used to update VERSION and TYPE for the Minecraft container.
      */
@@ -201,6 +219,9 @@ public class RemoteSyncConfig {
         }
         if ("password".equals(authMethod) && (password == null || password.isEmpty())) {
             return "Password is required for password authentication";
+        }
+        if (parallelTransferCount < 1 || parallelTransferCount > 64) {
+            return "Parallel transfer count must be between 1 and 64";
         }
         return null;
     }

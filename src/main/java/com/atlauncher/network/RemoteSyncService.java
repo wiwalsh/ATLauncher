@@ -17,12 +17,24 @@
  */
 package com.atlauncher.network;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
+
+import com.jcraft.jsch.ChannelSftp;
 
 import com.atlauncher.data.RemoteSyncConfig;
 import com.atlauncher.data.Server;
@@ -157,8 +169,17 @@ public class RemoteSyncService {
             log("Start command result: " + result);
 
             // Wait a moment and check status
-            Thread.sleep(2000);
+            log("Waiting for container to start...");
+            Thread.sleep(3000);
             String status = ssh.executeCommand(config.statusCommand);
+
+            if (status != null && !status.isEmpty()) {
+                log("=== CONTAINER STATUS ===");
+                log("Docker container is running: " + status.trim());
+                log("========================");
+            } else {
+                log("WARNING: Container may not have started properly");
+            }
 
             return new SyncResult(true, "Server started. Status: " + status);
 
@@ -341,6 +362,16 @@ public class RemoteSyncService {
         log("Minecraft version: " + server.getMinecraftVersion());
         log("Server type: " + getDockerType());
 
+        // Stop the container before syncing if restart is enabled
+        if (config.restartAfterSync) {
+            log("Stopping remote server before sync...");
+            SyncResult stopResult = stopRemoteServer();
+            if (!stopResult.success) {
+                log("Warning: Could not stop server (may not be running): " + stopResult.message);
+                // Continue anyway - server might not be running
+            }
+        }
+
         // Update version info on remote if enabled
         if (config.syncVersion) {
             SyncResult versionResult = updateRemoteVersion();
@@ -364,54 +395,279 @@ public class RemoteSyncService {
         }
 
         log("Sync tasks: " + tasks.size());
+        int parallelCount = Math.max(1, config.parallelTransferCount);  // No upper limit
+        log("Parallel workers: " + parallelCount);
 
-        try (SshClient ssh = new SshClient(config)) {
-            ssh.setLogCallback(this::log);
-            ssh.connect();
+        // Use parallel execution if more than 1 thread
+        if (parallelCount > 1) {
+            log("Using parallel native scp with " + parallelCount + " workers (shared file queue)...");
 
-            int completed = 0;
-            for (SyncTask task : tasks) {
-                if (cancelled) {
-                    return new SyncResult(false, "Sync cancelled");
-                }
+            // Check for SSH key
+            if (!SshClient.hasAutoKey()) {
+                log("WARNING: No SSH key found. Run 'Setup SSH Key' first for parallel transfers.");
+                log("Falling back to sequential SFTP...");
+            } else {
+                String keyPath = SshClient.getAutoKeyPath().toString().replace("\\", "/");
+                log("Using SSH key: " + keyPath);
 
-                updateProgress(task.description, completed, tasks.size());
-                log("Syncing: " + task.description);
+                // Build a flat queue of ALL individual files from all directories
+                BlockingQueue<FileUploadTask> fileQueue = new LinkedBlockingQueue<>();
 
                 try {
-                    if (task.isDirectory) {
-                        if (Files.exists(task.localPath) && Files.isDirectory(task.localPath)) {
-                            ssh.uploadDirectory(task.localPath, task.remotePath, null);
-                        } else {
-                            log("  Skipping (not found): " + task.localPath);
+                    // First create all remote directories using a single connection
+                    try (SshClient setupSsh = new SshClient(config)) {
+                        setupSsh.setLogCallback(this::log);
+                        setupSsh.connect();
+
+                        for (SyncTask task : tasks) {
+                            if (task.isDirectory && Files.exists(task.localPath)) {
+                                // Create the base directory and all subdirectories
+                                setupSsh.executeCommand("mkdir -p " + task.remotePath);
+                                try (Stream<Path> walk = Files.walk(task.localPath)) {
+                                    walk.filter(Files::isDirectory).forEach(dir -> {
+                                        Path relativePath = task.localPath.relativize(dir);
+                                        if (!relativePath.toString().isEmpty()) {
+                                            String remoteDir = task.remotePath + "/" + relativePath.toString().replace("\\", "/");
+                                            try {
+                                                setupSsh.executeCommand("mkdir -p " + remoteDir);
+                                            } catch (Exception e) {
+                                                // Ignore - directory might already exist
+                                            }
+                                        }
+                                    });
+                                }
+                            }
                         }
-                    } else {
-                        if (Files.exists(task.localPath)) {
-                            ssh.uploadFile(task.localPath, task.remotePath);
+                        log("Remote directories created");
+                    }
+
+                    // Now enumerate all files into the queue
+                    for (SyncTask task : tasks) {
+                        if (!Files.exists(task.localPath)) {
+                            log("Skipping (not found): " + task.localPath);
+                            continue;
+                        }
+
+                        if (task.isDirectory) {
+                            // Walk directory and add each file to queue
+                            Path baseLocal = task.localPath;
+                            String baseRemote = task.remotePath;
+                            try (Stream<Path> walk = Files.walk(baseLocal)) {
+                                walk.filter(Files::isRegularFile).forEach(file -> {
+                                    Path relativePath = baseLocal.relativize(file);
+                                    String remoteFile = baseRemote + "/" + relativePath.toString().replace("\\", "/");
+                                    String displayName = task.description + "/" + relativePath.toString().replace("\\", "/");
+                                    fileQueue.add(new FileUploadTask(file, remoteFile, displayName));
+                                });
+                            }
                         } else {
-                            log("  Skipping (not found): " + task.localPath);
+                            // Single file
+                            fileQueue.add(new FileUploadTask(task.localPath, task.remotePath, task.description));
                         }
                     }
-                } catch (SftpException e) {
-                    log("  ERROR: " + e.getMessage());
-                    LogManager.logStackTrace("SFTP error during sync", e);
-                } catch (IOException e) {
-                    log("  ERROR: " + e.getMessage());
-                    LogManager.logStackTrace("IO error during sync", e);
+
+                    int totalFiles = fileQueue.size();
+                    log("Total files to transfer: " + totalFiles);
+
+                    if (totalFiles == 0) {
+                        log("No files to sync");
+                        return new SyncResult(true, "No files to sync");
+                    }
+
+                    // Spawn workers - each runs native scp commands
+                    ExecutorService executor = Executors.newFixedThreadPool(parallelCount);
+                    AtomicInteger completed = new AtomicInteger(0);
+                    AtomicInteger failed = new AtomicInteger(0);
+
+                    for (int w = 1; w <= parallelCount; w++) {
+                        int workerNum = w;
+                        executor.submit(() -> {
+                            String workerName = "W" + workerNum;
+                            log("[" + workerName + "] Started");
+
+                            // Pull files from shared queue until empty
+                            FileUploadTask task;
+                            while ((task = fileQueue.poll()) != null) {
+                                if (cancelled) {
+                                    break;
+                                }
+
+                                try {
+                                    String localPath = task.localPath.toString().replace("\\", "/");
+                                    String scpTarget = config.username + "@" + config.host + ":" + task.remotePath;
+
+                                    ProcessBuilder pb = new ProcessBuilder(
+                                        "scp", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes",
+                                        "-P", String.valueOf(config.port),
+                                        "-i", keyPath,
+                                        localPath, scpTarget
+                                    );
+                                    pb.redirectErrorStream(true);
+
+                                    Process process = pb.start();
+                                    // Drain output to prevent blocking
+                                    try (BufferedReader reader = new BufferedReader(
+                                            new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                                        while (reader.readLine() != null) { /* drain */ }
+                                    }
+
+                                    int exitCode = process.waitFor();
+                                    int done = completed.incrementAndGet();
+                                    int pct = (done * 100) / totalFiles;
+
+                                    if (exitCode == 0) {
+                                        log("[" + workerName + "] [" + pct + "%] " + task.displayName + " (" + done + "/" + totalFiles + ")");
+                                    } else {
+                                        failed.incrementAndGet();
+                                        log("[" + workerName + "] FAILED: " + task.displayName + " (exit " + exitCode + ")");
+                                    }
+                                    updateProgress("[" + workerName + "] " + task.displayName, done, totalFiles);
+
+                                } catch (Exception e) {
+                                    failed.incrementAndGet();
+                                    completed.incrementAndGet();
+                                    log("[" + workerName + "] ERROR: " + task.displayName + " - " + e.getMessage());
+                                }
+                            }
+
+                            log("[" + workerName + "] Done - no more files in queue");
+                        });
+                    }
+
+                    executor.shutdown();
+                    boolean finished = executor.awaitTermination(60, TimeUnit.MINUTES);
+                    if (!finished) {
+                        executor.shutdownNow();
+                        return new SyncResult(false, "Sync timed out");
+                    }
+
+                    log("");
+                    log("Parallel sync complete: " + completed.get() + "/" + totalFiles + " files" +
+                        (failed.get() > 0 ? " (" + failed.get() + " failed)" : ""));
+                    updateProgress("Complete", totalFiles, totalFiles);
+                    log("=== File sync complete (parallel scp) ===");
+
+                } catch (Exception e) {
+                    String msg = "Parallel sync failed: " + e.getMessage();
+                    log(msg);
+                    LogManager.logStackTrace("Parallel sync failed", e);
+                    return new SyncResult(false, msg);
                 }
 
-                completed++;
+                // Start the container after syncing if restart is enabled
+                if (config.restartAfterSync) {
+                    log("Starting remote server after sync...");
+                    SyncResult startResult = startRemoteServer();
+                    if (!startResult.success) {
+                        return new SyncResult(false, "Sync completed but failed to start server: " + startResult.message);
+                    }
+                }
+
+                log("");
+                log("========================================");
+                log("=== SYNC COMPLETE - ALL DONE! ===");
+                log("========================================");
+                return new SyncResult(true, "Sync completed successfully");
             }
+        }
 
-            updateProgress("Complete", tasks.size(), tasks.size());
-            log("=== Sync complete ===");
-            return new SyncResult(true, "Sync completed successfully");
+        // Sequential execution (original behavior) - also fallback if no auto-key
+        {
+            // Sequential execution (original behavior)
+            try (SshClient ssh = new SshClient(config)) {
+                ssh.setLogCallback(this::log);
+                ssh.connect();
 
-        } catch (JSchException e) {
-            String msg = "Connection failed: " + e.getMessage();
-            log(msg);
-            LogManager.logStackTrace("SSH connection failed during sync", e);
-            return new SyncResult(false, msg);
+                int completed = 0;
+                for (SyncTask task : tasks) {
+                    if (cancelled) {
+                        return new SyncResult(false, "Sync cancelled");
+                    }
+
+                    updateProgress(task.description, completed, tasks.size());
+                    log("Syncing: " + task.description);
+
+                    try {
+                        if (task.isDirectory) {
+                            if (Files.exists(task.localPath) && Files.isDirectory(task.localPath)) {
+                                if (config.useFastTransfer) {
+                                    ssh.uploadDirectoryFast(task.localPath, task.remotePath);
+                                } else {
+                                    ssh.uploadDirectory(task.localPath, task.remotePath, null);
+                                }
+                            } else {
+                                log("  Skipping (not found): " + task.localPath);
+                            }
+                        } else {
+                            if (Files.exists(task.localPath)) {
+                                ssh.uploadFile(task.localPath, task.remotePath);
+                            } else {
+                                log("  Skipping (not found): " + task.localPath);
+                            }
+                        }
+                    } catch (SftpException e) {
+                        log("  ERROR: " + e.getMessage());
+                        LogManager.logStackTrace("SFTP error during sync", e);
+                    } catch (IOException e) {
+                        log("  ERROR: " + e.getMessage());
+                        LogManager.logStackTrace("IO error during sync", e);
+                    }
+
+                    completed++;
+                }
+
+                updateProgress("Complete", tasks.size(), tasks.size());
+                log("=== File sync complete ===");
+
+            } catch (JSchException e) {
+                String msg = "Connection failed: " + e.getMessage();
+                log(msg);
+                LogManager.logStackTrace("SSH connection failed during sync", e);
+                return new SyncResult(false, msg);
+            }
+        }
+
+        // Start the container after syncing if restart is enabled
+        if (config.restartAfterSync) {
+            log("Starting remote server after sync...");
+            SyncResult startResult = startRemoteServer();
+            if (!startResult.success) {
+                return new SyncResult(false, "Sync completed but failed to start server: " + startResult.message);
+            }
+            log("");
+            log("Remote server started - it will now download Minecraft " + server.getMinecraftVersion());
+            log("The server may take a few minutes to download and start the game.");
+        }
+
+        log("");
+        log("========================================");
+        log("=== SYNC COMPLETE - ALL DONE! ===");
+        log("========================================");
+        return new SyncResult(true, "Sync completed successfully");
+    }
+
+    /**
+     * Creates a directory on the remote server, ignoring if it exists.
+     */
+    private void mkdirSafe(ChannelSftp sftp, String path) {
+        try {
+            sftp.mkdir(path);
+        } catch (SftpException e) {
+            // Ignore - directory likely already exists
+        }
+    }
+
+    /**
+     * Creates a directory and all parent directories.
+     */
+    private void mkdirRecursive(ChannelSftp sftp, String path) {
+        String[] parts = path.split("/");
+        StringBuilder current = new StringBuilder();
+
+        for (String part : parts) {
+            if (part.isEmpty()) continue;
+            current.append("/").append(part);
+            mkdirSafe(sftp, current.toString());
         }
     }
 
@@ -491,7 +747,7 @@ public class RemoteSyncService {
     }
 
     /**
-     * Represents a single sync task.
+     * Represents a single sync task (directory-level).
      */
     private static class SyncTask {
         final String description;
@@ -504,6 +760,21 @@ public class RemoteSyncService {
             this.localPath = localPath;
             this.remotePath = remotePath;
             this.isDirectory = isDirectory;
+        }
+    }
+
+    /**
+     * Represents a single file upload task for the shared queue.
+     */
+    private static class FileUploadTask {
+        final Path localPath;
+        final String remotePath;
+        final String displayName;
+
+        FileUploadTask(Path localPath, String remotePath, String displayName) {
+            this.localPath = localPath;
+            this.remotePath = remotePath;
+            this.displayName = displayName;
         }
     }
 

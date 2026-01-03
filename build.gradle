@@ -81,8 +81,8 @@ dependencies {
     // Commons
     implementation 'org.apache.commons:commons-compress:1.27.1'
 
-    // SSH/SFTP for remote sync
-    implementation 'com.jcraft:jsch:0.1.55'
+    // SSH/SFTP for remote sync (mwiede fork supports modern SSH algorithms like rsa-sha2-256)
+    implementation 'com.github.mwiede:jsch:0.2.21'
 
     // OkHttp
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
@@ -242,6 +242,7 @@ shadowJar {
         exclude(dependency('org.apache.commons:commons-compress:.*'))
         exclude(dependency('com.twelvemonkeys.imageio:imageio-webp:.*'))
         exclude(dependency('com.jcraft:jsch:.*'))
+        exclude(dependency('com.github.mwiede:jsch:.*'))
     }
 
     // these are included by dbus-java which is only used on Linux

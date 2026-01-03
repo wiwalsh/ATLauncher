@@ -34,8 +34,10 @@ import javax.swing.JPanel;
 import javax.swing.JPasswordField;
 import javax.swing.JRadioButton;
 import javax.swing.JScrollPane;
+import javax.swing.JSpinner;
 import javax.swing.JTabbedPane;
 import javax.swing.JTextArea;
+import javax.swing.SpinnerNumberModel;
 import javax.swing.JTextField;
 import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
@@ -49,6 +51,7 @@ import com.atlauncher.gui.panels.ServerProfilesPanel;
 import com.atlauncher.gui.tabs.Tab;
 import com.atlauncher.managers.ServerManager;
 import com.atlauncher.network.RemoteSyncService;
+import com.atlauncher.network.SshClient;
 
 /**
  * Tab for configuring and managing remote server synchronization.
@@ -85,6 +88,9 @@ public class RemoteSyncTab extends HierarchyPanel implements Tab {
     // Version sync options
     private JCheckBox syncVersion;
     private JCheckBox cleanBeforeSync;
+    private JCheckBox restartAfterSync;
+    private JCheckBox useFastTransfer;
+    private JSpinner parallelTransferSpinner;
 
     // Auto sync triggers
     private JCheckBox autoSyncOnLaunch;
@@ -92,6 +98,10 @@ public class RemoteSyncTab extends HierarchyPanel implements Tab {
 
     // Log area
     private JTextArea logArea;
+
+    // Current sync service (for cancellation)
+    private volatile RemoteSyncService currentSyncService;
+    private JButton cancelSyncBtn;
 
     public RemoteSyncTab() {
         super(new BorderLayout());
@@ -253,6 +263,9 @@ public class RemoteSyncTab extends HierarchyPanel implements Tab {
         // Version sync options
         syncVersion.setSelected(config.syncVersion);
         cleanBeforeSync.setSelected(config.cleanBeforeSync);
+        restartAfterSync.setSelected(config.restartAfterSync);
+        useFastTransfer.setSelected(config.useFastTransfer);
+        parallelTransferSpinner.setValue(config.parallelTransferCount);
 
         // Auto sync
         autoSyncOnLaunch.setSelected(config.autoSyncOnLaunch);
@@ -471,8 +484,10 @@ public class RemoteSyncTab extends HierarchyPanel implements Tab {
         row++;
         gbc.gridy = row;
         gbc.insets = new Insets(0, 35, 5, 5);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
         JLabel worldWarning = new JLabel("<html><font color='orange'>Only sync world data if you know what you're doing!</font></html>");
         panel.add(worldWarning, gbc);
+        gbc.fill = GridBagConstraints.NONE;
 
         // Version sync section
         row++;
@@ -499,8 +514,56 @@ public class RemoteSyncTab extends HierarchyPanel implements Tab {
         row++;
         gbc.gridy = row;
         gbc.insets = new Insets(0, 35, 5, 5);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
         JLabel cleanInfo = new JLabel("<html><i>Recommended to avoid leftover files from previous versions</i></html>");
+        cleanInfo.setFont(cleanInfo.getFont().deriveFont(11f));
         panel.add(cleanInfo, gbc);
+        gbc.fill = GridBagConstraints.NONE;
+
+        row++;
+        gbc.gridy = row;
+        gbc.insets = new Insets(5, 20, 5, 5);
+        restartAfterSync = new JCheckBox("Restart Docker container after sync");
+        restartAfterSync.setSelected(true);
+        restartAfterSync.setToolTipText("Stops container before sync and starts it after to apply version changes");
+        panel.add(restartAfterSync, gbc);
+
+        row++;
+        gbc.gridy = row;
+        gbc.insets = new Insets(0, 35, 5, 5);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        JLabel restartInfo = new JLabel("<html><i>Required for the container to download and run the new Minecraft version</i></html>");
+        restartInfo.setFont(restartInfo.getFont().deriveFont(11f));
+        panel.add(restartInfo, gbc);
+        gbc.fill = GridBagConstraints.NONE;
+
+        row++;
+        gbc.gridy = row;
+        gbc.insets = new Insets(10, 20, 5, 5);
+        useFastTransfer = new JCheckBox("Use fast transfer (native scp)");
+        useFastTransfer.setSelected(true);
+        useFastTransfer.setToolTipText("Uses system scp command for much faster directory uploads");
+        panel.add(useFastTransfer, gbc);
+
+        row++;
+        gbc.gridy = row;
+        gbc.insets = new Insets(0, 35, 5, 5);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        JLabel fastInfo = new JLabel("<html><i>Much faster than SFTP, requires scp installed on system</i></html>");
+        fastInfo.setFont(fastInfo.getFont().deriveFont(11f));
+        panel.add(fastInfo, gbc);
+        gbc.fill = GridBagConstraints.NONE;
+
+        row++;
+        gbc.gridy = row;
+        gbc.insets = new Insets(10, 20, 5, 5);
+        JPanel parallelPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        parallelPanel.add(new JLabel("Parallel transfers:"));
+        parallelTransferSpinner = new JSpinner(new SpinnerNumberModel(3, 1, 32, 1));
+        parallelTransferSpinner.setToolTipText("Number of simultaneous SFTP connections (1-32)");
+        parallelPanel.add(parallelTransferSpinner);
+        parallelPanel.add(new JLabel("(1=sequential, higher=faster)"));
+        panel.add(parallelPanel, gbc);
 
         // Spacer
         row++;
@@ -549,6 +612,10 @@ public class RemoteSyncTab extends HierarchyPanel implements Tab {
         JButton testConnectionBtn = new JButton("Test Connection");
         testConnectionBtn.addActionListener(e -> testConnection());
 
+        JButton setupKeyBtn = new JButton("Setup SSH Key");
+        setupKeyBtn.addActionListener(e -> setupSshKey());
+        setupKeyBtn.setToolTipText("Generate SSH key for faster transfers (uses password to install)");
+
         JButton syncNowBtn = new JButton("Sync Now");
         syncNowBtn.addActionListener(e -> syncNow());
 
@@ -562,14 +629,95 @@ public class RemoteSyncTab extends HierarchyPanel implements Tab {
         JButton stopServerBtn = new JButton("Stop Remote Server");
         stopServerBtn.addActionListener(e -> stopRemoteServer());
 
+        cancelSyncBtn = new JButton("Cancel Sync");
+        cancelSyncBtn.addActionListener(e -> cancelSync());
+        cancelSyncBtn.setEnabled(false);
+        cancelSyncBtn.setToolTipText("Cancel the current sync operation");
+
         panel.add(saveSettingsBtn);
         panel.add(testConnectionBtn);
+        panel.add(setupKeyBtn);
         panel.add(syncNowBtn);
+        panel.add(cancelSyncBtn);
         panel.add(remoteStatusBtn);
         panel.add(startServerBtn);
         panel.add(stopServerBtn);
 
         return panel;
+    }
+
+    private void cancelSync() {
+        if (currentSyncService != null) {
+            appendLog("[CANCEL] Cancelling sync operation...");
+            currentSyncService.cancel();
+            cancelSyncBtn.setEnabled(false);
+        }
+    }
+
+    private void setupSshKey() {
+        // Check password auth is selected
+        if (!"Password".equals(authMethodCombo.getSelectedItem())) {
+            appendLog("[ERROR] SSH key setup requires password authentication mode");
+            return;
+        }
+
+        String password = new String(passwordField.getPassword());
+        if (password.isEmpty()) {
+            appendLog("[ERROR] Password required to install SSH key on remote server");
+            return;
+        }
+
+        String validationError = validateConfig();
+        if (validationError != null) {
+            appendLog("[ERROR] " + validationError);
+            return;
+        }
+
+        appendLog("--- Setting up SSH Key ---");
+        appendLog("This will generate an SSH key pair and install it on the remote server.");
+        appendLog("After setup, syncs will be faster using key-based authentication.");
+        appendLog("");
+
+        // Run in background
+        new SwingWorker<Boolean, String>() {
+            @Override
+            protected Boolean doInBackground() {
+                try {
+                    RemoteSyncConfig config = buildConfig();
+                    SshClient ssh = new SshClient(config);
+                    ssh.setLogCallback(msg -> publish(msg));
+
+                    return ssh.setupAutoKey();
+                } catch (Exception e) {
+                    publish("[ERROR] " + e.getMessage());
+                    return false;
+                }
+            }
+
+            @Override
+            protected void process(List<String> chunks) {
+                for (String msg : chunks) {
+                    appendLog(msg);
+                }
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    boolean success = get();
+                    appendLog("");
+                    if (success) {
+                        appendLog("[SUCCESS] SSH key installed! Future syncs will use key authentication.");
+                        appendLog("Key saved at: " + SshClient.getAutoKeyPath());
+                    } else {
+                        appendLog("[FAILED] Could not set up SSH key");
+                    }
+                    appendLog("--- Setup Complete ---");
+                } catch (Exception e) {
+                    appendLog("[ERROR] " + e.getMessage());
+                }
+            }
+        }.execute();
     }
 
     /**
@@ -608,6 +756,9 @@ public class RemoteSyncTab extends HierarchyPanel implements Tab {
         // Version sync options
         config.syncVersion = syncVersion.isSelected();
         config.cleanBeforeSync = cleanBeforeSync.isSelected();
+        config.restartAfterSync = restartAfterSync.isSelected();
+        config.useFastTransfer = useFastTransfer.isSelected();
+        config.parallelTransferCount = (Integer) parallelTransferSpinner.getValue();
 
         // Auto sync
         config.autoSyncOnLaunch = autoSyncOnLaunch.isSelected();
@@ -699,12 +850,16 @@ public class RemoteSyncTab extends HierarchyPanel implements Tab {
         if (syncWorld.isSelected()) appendLog("  - world/ (WARNING: Large!)");
         appendLog("");
 
+        // Enable cancel button
+        cancelSyncBtn.setEnabled(true);
+
         // Run sync in background thread
         new SwingWorker<RemoteSyncService.SyncResult, String>() {
             @Override
             protected RemoteSyncService.SyncResult doInBackground() {
                 RemoteSyncConfig config = buildConfig();
                 RemoteSyncService service = new RemoteSyncService(selectedServer, config);
+                currentSyncService = service;  // Store for cancellation
                 service.setLogCallback(msg -> publish(msg));
                 service.setProgressCallback(progress -> {
                     publish(String.format("[%d%%] %s (%d/%d)",
@@ -725,6 +880,8 @@ public class RemoteSyncTab extends HierarchyPanel implements Tab {
 
             @Override
             protected void done() {
+                currentSyncService = null;  // Clear service reference
+                cancelSyncBtn.setEnabled(false);  // Disable cancel button
                 try {
                     RemoteSyncService.SyncResult result = get();
                     appendLog("");
